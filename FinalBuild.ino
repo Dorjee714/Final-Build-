@@ -1,8 +1,10 @@
+
 #include <QTRSensors.h>
 #include <SPI.h>
 #include <SD.h>
 
-// LINE SENSOR
+
+// QTR LINE SENSOR
 
 QTRSensors qtr;
 
@@ -23,71 +25,59 @@ const int echoPin = 2;
 long duration;
 int distance;
 
-
-// MOTOR DRIVER
+// MOTOR
 
 const int ENA = 9;
 const int IN1 = 8;
 const int IN2 = 7;
-
 const int ENB = 5;
 const int IN3 = 6;
 const int IN4 = 4;
 
-int motorSpeed = 130;
-int searchSpeed = 90;
-int pushSpeed = 110;
 
-int danceDuration = 500;
-
-
-// COLOUR SENSOR
+// TCS230 COLOUR SENSOR
 
 
 const int S2 = A4;
 const int S3 = A5;
-const int colourOut = 0;
-
-unsigned long redValue;
-unsigned long greenValue;
-unsigned long blueValue;
-
-const int GREEN_RATIO_PERCENT = 85;
+const int colourOut = 0;  // D0
 
 
 // SD CARD
 
 
-const int chipSelect = 10;
-bool sdReady = false;
+const int SD_CS = 10;
 
 
+// ROBOT SETTINGS
+int motorSpeed = 130;
+int searchSpeed = 90;
+int pushSpeed = 110;
 
+const int objectDistance = 10;
 
-const int obstacleDistance = 10;
-
-unsigned long searchTimeout = 15000;
-
-unsigned long searchStartTime = 0;
-unsigned long lastColourCheck = 0;
+const int GREEN_RATIO_PERCENT = 85;
 
 int nonGreenCount = 0;
 
-// Robot stages
-int robotStage = 0;
 
-// 0 = Follow line
-// 1 = Search for object
-// 2 = Push object
-// 3 = Perform dance
-// 4 = Finished
+// ROBOT STATUS
 
 
+bool greenZoneFound = false;
+bool pushingObject = false;
+bool rescueComplete = false;
+bool danceDone = false;
 
 
 
 void setup() {
 
+  // Ultrasonic sensor
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+
+  // Motor driver
   pinMode(ENA, OUTPUT);
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
@@ -96,212 +86,114 @@ void setup() {
   pinMode(IN3, OUTPUT);
   pinMode(IN4, OUTPUT);
 
-  pinMode(trigPin, OUTPUT);
-  pinMode(echoPin, INPUT);
-
+  // Colour sensor
   pinMode(S2, OUTPUT);
   pinMode(S3, OUTPUT);
   pinMode(colourOut, INPUT);
 
-  stopMotors();
+  // SD card
+  pinMode(SD_CS, OUTPUT);
 
-  // Set up line sensor
+  // QTR line sensor
   qtr.setTypeRC();
   qtr.setSensorPins(qtrPins, SensorCount);
+  qtr.setTimeout(2500);
+
+  stopMotors();
 
   // Calibrate line sensor
-  for (int i = 0; i < 100; i++) {
+  // Move the sensor over black and white
+  // during this calibration period.
 
+  for (int i = 0; i < 100; i++) {
     qtr.calibrate();
     delay(20);
   }
-
-  // Start SD card
-  sdReady = SD.begin(chipSelect);
-
-  stopMotors();
 }
-
-
 
 
 void loop() {
 
-  // STAGE 0: FOLLOW THE LINE
-
-  if (robotStage == 0) {
+  // 1. Follow the line until green zone
+  if (!greenZoneFound) {
 
     followLine();
 
-    if (millis() - lastColourCheck >= 250) {
-
-      lastColourCheck = millis();
-
-      if (isGreen()) {
-
-        stopMotors();
-
-        nonGreenCount = 0;
-
-        searchStartTime = millis();
-
-        robotStage = 1;
-      }
+    if (isGreen()) {
+      greenZoneFound = true;
+      stopMotors();
+      delay(500);
     }
   }
 
+  // 2. Search for the object
+  else if (greenZoneFound &&
+           !pushingObject &&
+           !rescueComplete) {
 
-  // STAGE 1: SEARCH FOR OBJECT
+    distance = getDistance();
 
-  else if (robotStage == 1) {
+    if (distance > 0 && distance <= objectDistance) {
 
-    if (millis() - searchStartTime >= searchTimeout) {
+      stopMotors();
+      pushingObject = true;
+      delay(300);
+
+    } else {
+
+      searchForObject();
+    }
+  }
+
+  // 3. Push object outside green zone
+  else if (pushingObject && !rescueComplete) {
+
+    moveForward(pushSpeed);
+
+    delay(200);
+
+    if (isGreen()) {
+
+      nonGreenCount = 0;
+
+    } else {
+
+      nonGreenCount++;
+    }
+
+    if (nonGreenCount >= 3) {
 
       stopMotors();
 
-      robotStage = 4;
-    }
+      pushingObject = false;
+      rescueComplete = true;
 
-    else {
-
-      if (millis() - lastColourCheck >= 250) {
-
-        lastColourCheck = millis();
-
-        if (isGreen()) {
-          nonGreenCount = 0;
-        }
-
-        else {
-          nonGreenCount++;
-        }
-
-        if (nonGreenCount >= 3) {
-
-          stopMotors();
-
-          robotStage = 4;
-        }
-      }
-
-      if (robotStage == 1) {
-
-        distance = getDistance();
-
-        if (distance > 0 &&
-            distance <= obstacleDistance) {
-
-          stopMotors();
-
-          nonGreenCount = 0;
-
-          robotStage = 2;
-        }
-
-        else {
-
-          moveForward(searchSpeed, searchSpeed);
-        }
-      }
+      delay(500);
     }
   }
 
-
-  // STAGE 2: PUSH THE OBJECT
-
-  else if (robotStage == 2) {
-
-    moveForward(pushSpeed, pushSpeed);
-
-    if (millis() - lastColourCheck >= 250) {
-
-      lastColourCheck = millis();
-
-      if (isGreen()) {
-
-        nonGreenCount = 0;
-      }
-
-      else {
-
-        nonGreenCount++;
-      }
-
-      if (nonGreenCount >= 3) {
-
-        stopMotors();
-
-        delay(500);
-
-        robotStage = 3;
-      }
-    }
-  }
-
-
-  // STAGE 3: PERFORM DANCE
-
-  else if (robotStage == 3) {
+  // 4. Check SD card and perform dance
+  else if (rescueComplete && !danceDone) {
 
     stopMotors();
 
-    performDance();
+    if (SD.begin(SD_CS)) {
 
-    robotStage = 4;
+      if (performDance()) {
+        danceDone = true;
+      }
+
+    }
+
+    delay(500);
   }
 
-
-  // STAGE 4: FINISHED
-
-  else if (robotStage == 4) {
+  // 5. Stop after dancing
+  else if (danceDone) {
 
     stopMotors();
   }
 }
-
-
-
-// MOTOR CONTROL
-
-void moveForward(int leftSpeed, int rightSpeed) {
-
-  digitalWrite(IN1, HIGH);
-  digitalWrite(IN2, LOW);
-
-  digitalWrite(IN3, HIGH);
-  digitalWrite(IN4, LOW);
-
-  analogWrite(ENA, leftSpeed);
-  analogWrite(ENB, rightSpeed);
-}
-
-
-void moveBackward(int leftSpeed, int rightSpeed) {
-
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, HIGH);
-
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, HIGH);
-
-  analogWrite(ENA, leftSpeed);
-  analogWrite(ENB, rightSpeed);
-}
-
-
-void stopMotors() {
-
-  analogWrite(ENA, 0);
-  analogWrite(ENB, 0);
-
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, LOW);
-
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, LOW);
-}
-
-
 
 // LINE FOLLOWING
 
@@ -310,7 +202,7 @@ void followLine() {
 
   uint16_t position = qtr.readLineBlack(sensorValues);
 
-  int leftError = position - 1500;
+  int leftError = (int)position - 1500;
 
   int correction = leftError / 8;
 
@@ -320,12 +212,12 @@ void followLine() {
   leftSpeed = constrain(leftSpeed, 0, 255);
   rightSpeed = constrain(rightSpeed, 0, 255);
 
-  moveForward(leftSpeed, rightSpeed);
+  setLeftMotor(leftSpeed);
+  setRightMotor(rightSpeed);
 }
 
 
-
-// ULTRASONIC SENSOR
+// ULTRASONIC DISTANCE
 
 
 int getDistance() {
@@ -341,7 +233,6 @@ int getDistance() {
   duration = pulseIn(echoPin, HIGH, 25000);
 
   if (duration == 0) {
-
     return -1;
   }
 
@@ -351,183 +242,234 @@ int getDistance() {
 }
 
 
+// COLOUR DETECTION
 
-// COLOUR SENSOR
 
-
-unsigned long readColourFrequency(int s2Value, int s3Value) {
+unsigned long readColour(bool s2Value, bool s3Value) {
 
   digitalWrite(S2, s2Value);
   digitalWrite(S3, s3Value);
 
-  delay(50);
+  delay(10);
 
-  unsigned long frequency = pulseIn(colourOut, LOW, 50000);
-
-  return frequency;
+  return pulseIn(colourOut, LOW, 50000);
 }
-
 
 bool isGreen() {
 
-  redValue = readColourFrequency(LOW, LOW);
+  // Read red
+  unsigned long red = readColour(LOW, LOW);
 
-  blueValue = readColourFrequency(LOW, HIGH);
+  // Read green
+  unsigned long green = readColour(HIGH, HIGH);
 
-  greenValue = readColourFrequency(HIGH, HIGH);
+  // Read blue
+  unsigned long blue = readColour(LOW, HIGH);
 
-  if (redValue == 0 ||
-      greenValue == 0 ||
-      blueValue == 0) {
-
+  if (red == 0 || green == 0 || blue == 0) {
     return false;
   }
 
-  if (greenValue * 100UL <
-      redValue * GREEN_RATIO_PERCENT &&
-      greenValue * 100UL <
-      blueValue * GREEN_RATIO_PERCENT) {
+  if (green * 100 <
+      red * GREEN_RATIO_PERCENT &&
+      green * 100 <
+      blue * GREEN_RATIO_PERCENT) {
 
     return true;
   }
 
-  else {
-
-    return false;
-  }
+  return false;
 }
 
+
+// SEARCH FOR OBJECT
+
+
+void searchForObject() {
+
+  // Turn in place
+  setLeftMotor(searchSpeed);
+  setRightMotor(-searchSpeed);
+}
+
+
+// MOTOR CONTROL
+
+
+void setRightMotor(int speed) {
+
+  speed = constrain(speed, -255, 255);
+
+  if (speed > 0) {
+
+    digitalWrite(IN1, HIGH);
+    digitalWrite(IN2, LOW);
+
+  } else if (speed < 0) {
+
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, HIGH);
+
+  } else {
+
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, LOW);
+  }
+
+  analogWrite(ENA, abs(speed));
+}
+
+
+void setLeftMotor(int speed) {
+
+  speed = constrain(speed, -255, 255);
+
+  if (speed > 0) {
+
+    digitalWrite(IN3, HIGH);
+    digitalWrite(IN4, LOW);
+
+  } else if (speed < 0) {
+
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, HIGH);
+
+  } else {
+
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, LOW);
+  }
+
+  analogWrite(ENB, abs(speed));
+}
+
+
+// MOVEMENT FUNCTIONS
+
+
+void moveForward(int speed) {
+
+  setLeftMotor(speed);
+  setRightMotor(speed);
+}
+
+void moveBackward(int speed) {
+
+  setLeftMotor(-speed);
+  setRightMotor(-speed);
+}
+
+void stopMotors() {
+
+  setLeftMotor(0);
+  setRightMotor(0);
+}
 
 
 // DANCE MOVEMENTS
 
-void left() {
 
-  // Turn left
+void danceLeft() {
 
-  analogWrite(ENA, motorSpeed);
-  analogWrite(ENB, motorSpeed);
+  setLeftMotor(-100);
+  setRightMotor(100);
 
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, HIGH);
+  delay(500);
 
-  digitalWrite(IN3, HIGH);
-  digitalWrite(IN4, LOW);
+  stopMotors();
+  delay(150);
+}
 
-  delay(danceDuration);
+void danceRight() {
+
+  setLeftMotor(100);
+  setRightMotor(-100);
+
+  delay(500);
+
+  stopMotors();
+  delay(150);
+}
+
+void danceForward() {
+
+  moveForward(100);
+
+  delay(500);
+
+  stopMotors();
+  delay(150);
+}
+
+void danceBackward() {
+
+  moveBackward(100);
+
+  delay(500);
 
   stopMotors();
   delay(150);
 }
 
 
-void right() {
-
-  // Turn right
-
-  analogWrite(ENA, motorSpeed);
-  analogWrite(ENB, motorSpeed);
-
-  digitalWrite(IN1, HIGH);
-  digitalWrite(IN2, LOW);
-
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, HIGH);
-
-  delay(danceDuration);
-
-  stopMotors();
-  delay(150);
-}
+// READ DANCE INSTRUCTIONS FROM SD CARD
 
 
-void forward() {
+bool performDance() {
 
-  moveForward(motorSpeed, motorSpeed);
+  File danceFile = SD.open("DANCE.TXT");
 
-  delay(danceDuration);
+  if (!danceFile) {
+    return false;
+  }
 
-  stopMotors();
-  delay(150);
-}
+  char moves[64];
 
+  int moveCount = 0;
 
-void backward() {
+  while (danceFile.available() && moveCount < 63) {
 
-  moveBackward(motorSpeed, motorSpeed);
+    char instruction = danceFile.read();
 
-  delay(danceDuration);
+    if (instruction == 'L' ||
+        instruction == 'R' ||
+        instruction == 'F' ||
+        instruction == 'B') {
 
-  stopMotors();
-  delay(150);
-}
+      moves[moveCount] = instruction;
+      moveCount++;
+    }
+  }
 
+  moves[moveCount] = '\0';
 
-// READ DANCE FROM SD CARD
+  danceFile.close();
 
+  if (moveCount == 0) {
+    return false;
+  }
 
-void performDance() {
+  // Perform instructions
+  for (int i = 0; i < moveCount; i++) {
 
-  stopMotors();
+    if (moves[i] == 'L') {
+      danceLeft();
+    }
 
-  if (sdReady == true) {
+    else if (moves[i] == 'R') {
+      danceRight();
+    }
 
-    File danceFile = SD.open("DANCE.TXT");
+    else if (moves[i] == 'F') {
+      danceForward();
+    }
 
-    if (danceFile) {
-
-      String dance = "";
-
-      // Read the dance instructions
-
-      while (danceFile.available()) {
-
-        char character = danceFile.read();
-
-        if (character == 'L' ||
-            character == 'R' ||
-            character == 'F' ||
-            character == 'B') {
-
-          dance = dance + character;
-        }
-      }
-
-      danceFile.close();
-
-      // Convert String into character array
-
-      char moves[64];
-
-      dance.toCharArray(moves, 64);
-
-      // Read each dance instruction
-
-      for (int i = 0; i < dance.length() && i < 63; i++) {
-
-        if (moves[i] == 'L') {
-
-          left();
-        }
-
-        else if (moves[i] == 'R') {
-
-          right();
-        }
-
-        else if (moves[i] == 'F') {
-
-          forward();
-        }
-
-        else if (moves[i] == 'B') {
-
-          backward();
-        }
-      }
+    else if (moves[i] == 'B') {
+      danceBackward();
     }
   }
 
   stopMotors();
-}
 
+  return true;
+}
