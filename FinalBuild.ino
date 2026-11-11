@@ -1,4 +1,3 @@
-
 #include <QTRSensors.h>
 #include <SPI.h>
 #include <SD.h>
